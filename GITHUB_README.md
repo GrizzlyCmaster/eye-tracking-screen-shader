@@ -2,6 +2,23 @@
 
 GPU-accelerated eye-tracking shader with foveated rendering for PC gaming. Uses webcam-based gaze detection to create a motion-sickness-free magnification effect by applying selective blur to peripheral vision, mimicking natural human vision.
 
+## ⚠️ Important: Accuracy Limitations
+
+**This is a proof-of-concept with fundamental accuracy limitations.**
+
+Webcam-based eye tracking has ±5-10° error, which means it's good for **general gaze direction** but not precise point tracking. This is due to:
+- No IR illumination (can't see pupil reflections clearly)
+- Low webcam resolution limits iris detail
+- Ambient lighting variations
+- Basic head movement compensation
+
+**For accurate gaming eye tracking, dedicated hardware is required:**
+- **Tobii Eye Tracker 5** (~$230) - Gaming-focused, ±0.5° accuracy
+- **Gazepoint GP3** (~$500) - Research-grade
+- Works with IR cameras and higher sampling rates
+
+This implementation is educational and demonstrates the core concepts, but real applications need specialized hardware.
+
 ## 🎮 Features
 
 - **Foveated Rendering**: Sharp center focus with progressively blurred periphery - no geometric distortion
