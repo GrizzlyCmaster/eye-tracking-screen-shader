@@ -3,6 +3,7 @@
 ## ShaderGlass
 
 Overlay for running GPU shaders on top of Windows desktop.
+This is my modification that adds 2 new shaders (so far) and implements them with eye tracking. They are meant to have zooming functionality - untested.
 
 ### Features
 
