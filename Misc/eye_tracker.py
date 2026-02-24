@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Eye Tracking Application for ShaderGlass
-Detects eye gaze position from webcam and writes normalized coordinates to a file
+Gaze Direction Tracker for ShaderGlass
+Detects where you are looking on the screen by tracking pupil position
+and writes normalized gaze direction coordinates to a file
 that ShaderGlass or a helper app can read.
 
-Installation:
-  pip install opencv-python gaze-tracking
+Uses OpenCV cascade classifiers to detect eyes, then tracks iris position
+within each eye to estimate gaze direction on screen.
 
 Usage:
   python eye_tracker.py
   
-The app writes gaze coordinates to 'eye_gaze.json' in the same directory.
+The app writes gaze direction to 'eye_gaze.json' in the same directory.
+- Gaze X/Y: 0.5 = center of screen, 0.0 = left/top, 1.0 = right/bottom
 """
 
 import json
@@ -21,17 +23,27 @@ from pathlib import Path
 
 try:
     import cv2
-    from gaze_tracking import GazeTracking
+    import numpy as np
 except ImportError:
     print("Missing required packages. Install with:")
-    print("  pip install opencv-python gaze-tracking")
+    print("  pip install opencv-python numpy")
     sys.exit(1)
 
 
 class EyeTracker:
     def __init__(self, output_file="eye_gaze.json"):
         self.output_file = output_file
-        self.gaze = GazeTracking()
+        
+        # Load cascade classifiers (built into OpenCV)
+        cascade_path = cv2.data.haarcascades
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        )
+        self.eye_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_eye.xml'
+        )
+        
+        # Open webcam
         self.webcam = cv2.VideoCapture(0)
         
         if not self.webcam.isOpened():
@@ -46,11 +58,52 @@ class EyeTracker:
         self.smooth_x = 0.5
         self.smooth_y = 0.5
         self.smoothing_factor = 0.15
+        self.face_detected = False
         
-        print(f"Eye Tracker initialized")
+        print(f"Gaze Direction Tracker initialized with OpenCV")
         print(f"Camera resolution: {self.width}x{self.height}")
         print(f"Output file: {self.output_file}")
-        print(f"Press 'q' to quit, 'c' to calibrate, space to show/hide visualization")
+        print(f"")
+        print(f"Look at different parts of your screen.")
+        print(f"The red circle shows where your gaze is directed.")
+        print(f"Press 'q' to quit, 'space' to show/hide visualization")
+    
+    def find_iris_position(self, eye_region):
+        """
+        Find iris position relative to eye (0.0-1.0)
+        Returns normalized position within the eye region
+        0.5 = center, 0.0 = left/top, 1.0 = right/bottom
+        """
+        gray = cv2.cvtColor(eye_region, cv2.COLOR_BGR2GRAY)
+        
+        # Apply Gaussian blur to smooth the image
+        blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+        
+        # Create a binary image (iris is darker than eye white)
+        _, thresh = cv2.threshold(blurred, 100, 255, cv2.THRESH_BINARY_INV)
+        
+        # Find contours (pupil/iris)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        h, w = eye_region.shape[:2]
+        
+        if contours:
+            # Get the largest contour (the pupil/iris)
+            largest_contour = max(contours, key=cv2.contourArea)
+            (x, y), radius = cv2.minEnclosingCircle(largest_contour)
+            
+            # Normalize iris position within eye region (0.0 to 1.0)
+            iris_x = x / w
+            iris_y = y / h
+            
+            # Clamp to valid range
+            iris_x = max(0.1, min(0.9, iris_x))  # Avoid extreme edges
+            iris_y = max(0.1, min(0.9, iris_y))
+            
+            return iris_x, iris_y
+        
+        # Fallback: center of eye
+        return 0.5, 0.5
     
     def run(self):
         """Main tracking loop"""
@@ -65,31 +118,72 @@ class EyeTracker:
                 
                 # Flip frame horizontally for natural viewing
                 frame = cv2.flip(frame, 1)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                h, w = frame.shape[:2]
                 
-                # Process frame
-                self.gaze.refresh(frame)
+                gaze_x, gaze_y = self.smooth_x, self.smooth_y
+                self.face_detected = False
                 
-                # Get gaze coordinates (0.0 to 1.0)
-                gaze_x = self.gaze.horizontal_ratio
-                gaze_y = self.gaze.vertical_ratio
+                # Detect faces
+                faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
                 
-                # Validate coordinates
-                if gaze_x is not None and gaze_y is not None:
-                    # Apply smoothing to reduce jitter
-                    self.smooth_x = self.smooth_x * (1 - self.smoothing_factor) + gaze_x * self.smoothing_factor
-                    self.smooth_y = self.smooth_y * (1 - self.smoothing_factor) + gaze_y * self.smoothing_factor
+                if len(faces) > 0:
+                    self.face_detected = True
+                    # Use the largest face detected
+                    face = max(faces, key=lambda f: f[2] * f[3])
+                    fx, fy, fw, fh = face
                     
-                    # Clamp to valid range
-                    self.smooth_x = max(0.0, min(1.0, self.smooth_x))
-                    self.smooth_y = max(0.0, min(1.0, self.smooth_y))
+                    # Region of interest for eyes (upper half of face)
+                    roi_gray = gray[fy:fy + fh//2, fx:fx + fw]
+                    roi_color = frame[fy:fy + fh//2, fx:fx + fw]
                     
-                    # Write to JSON file
-                    self._write_gaze_data(self.smooth_x, self.smooth_y)
+                    # Detect eyes
+                    eyes = self.eye_cascade.detectMultiScale(roi_gray)
+                    
+                    if len(eyes) >= 2:
+                        # Sort eyes by x coordinate (left to right)
+                        eyes = sorted(eyes, key=lambda e: e[0])
+                        
+                        # Get both eyes
+                        left_eye = eyes[0]
+                        right_eye = eyes[-1]
+                        
+                        # Extract eye regions
+                        lex, ley, lew, leh = left_eye
+                        rex, rey, rew, reh = right_eye
+                        
+                        left_eye_region = roi_color[ley:ley+leh, lex:lex+lew]
+                        right_eye_region = roi_color[rey:rey+reh, rex:rex+rew]
+                        
+                        # Find iris position within each eye (0.0-1.0)
+                        left_iris_x, left_iris_y = self.find_iris_position(left_eye_region)
+                        right_iris_x, right_iris_y = self.find_iris_position(right_eye_region)
+                        
+                        # Average iris position from both eyes
+                        avg_iris_x = (left_iris_x + right_iris_x) / 2
+                        avg_iris_y = (left_iris_y + right_iris_y) / 2
+                        
+                        # Convert iris position to gaze direction on screen
+                        # Iris at 0.5 = center of screen
+                        # Iris at 0.0 = looking left/up
+                        # Iris at 1.0 = looking right/down
+                        new_gaze_x = avg_iris_x
+                        new_gaze_y = avg_iris_y
+                        
+                        # Apply smoothing to reduce jitter
+                        self.smooth_x = self.smooth_x * (1 - self.smoothing_factor) + new_gaze_x * self.smoothing_factor
+                        self.smooth_y = self.smooth_y * (1 - self.smoothing_factor) + new_gaze_y * self.smoothing_factor
+                        
+                        gaze_x = self.smooth_x
+                        gaze_y = self.smooth_y
+                
+                # Write to JSON file
+                self._write_gaze_data(gaze_x, gaze_y)
                 
                 # Visualization
                 if show_viz:
-                    frame = self._draw_visualization(frame)
-                    cv2.imshow("Eye Tracker (Press 'q' to quit, 'c' to calibrate, space to hide)", frame)
+                    frame = self._draw_visualization(frame, faces)
+                    cv2.imshow("Eye Tracker (Press 'q' to quit, space to hide)", frame)
                 else:
                     cv2.imshow("Eye Tracker - Hidden (Press space to show)", frame)
                 
@@ -100,8 +194,6 @@ class EyeTracker:
                     break
                 elif key == ord(' '):
                     show_viz = not show_viz
-                elif key == ord('c'):
-                    print("Calibration not implemented yet - adjust ZoomStrength/Radius manually")
         
         finally:
             self.cleanup()
@@ -122,30 +214,37 @@ class EyeTracker:
         except IOError as e:
             print(f"Warning: Could not write to {self.output_file}: {e}")
     
-    def _draw_visualization(self, frame):
-        """Draw gaze point and crosshair on frame"""
+    def _draw_visualization(self, frame, faces):
+        """Draw gaze direction and crosshair on frame"""
         h, w = frame.shape[:2]
         
-        # Draw center crosshair
-        cv2.line(frame, (w // 2 - 20, h // 2), (w // 2 + 20, h // 2), (0, 255, 0), 1)
-        cv2.line(frame, (w // 2, h // 2 - 20), (w // 2, h // 2 + 20), (0, 255, 0), 1)
+        # Draw screen center crosshair (green)
+        cv2.line(frame, (w // 2 - 30, h // 2), (w // 2 + 30, h // 2), (0, 255, 0), 2)
+        cv2.line(frame, (w // 2, h // 2 - 30), (w // 2, h // 2 + 30), (0, 255, 0), 2)
         
-        # Draw gaze point if available
-        if self.gaze.horizontal_ratio is not None and self.gaze.vertical_ratio is not None:
-            gaze_x = int(self.smooth_x * w)
-            gaze_y = int(self.smooth_y * h)
-            cv2.circle(frame, (gaze_x, gaze_y), 10, (0, 0, 255), -1)  # Red filled circle
-            cv2.circle(frame, (gaze_x, gaze_y), 15, (0, 0, 255), 2)   # Red circle outline
+        # Draw gaze direction point (where you're looking on screen)
+        gaze_x = int(self.smooth_x * w)
+        gaze_y = int(self.smooth_y * h)
+        cv2.circle(frame, (gaze_x, gaze_y), 20, (0, 0, 255), -1)    # Red filled circle (large)
+        cv2.circle(frame, (gaze_x, gaze_y), 25, (0, 0, 255), 3)     # Red circle outline
         
-        # Draw face rectangle if detected
-        if self.gaze.face_detected:
-            for face in self.gaze.faces:
-                x, y, w_face, h_face = face
-                cv2.rectangle(frame, (x, y), (x + w_face, y + h_face), (255, 0, 0), 2)
+        # Draw detected faces with rectangles
+        for (x, y, fw, fh) in faces:
+            cv2.rectangle(frame, (x, y), (x + fw, y + fh), (255, 0, 0), 2)
+            cv2.putText(frame, "Face", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
         
         # Draw info text
-        cv2.putText(frame, f"X: {self.smooth_x:.2f}  Y: {self.smooth_y:.2f}", 
-                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        status = "DETECTED" if self.face_detected else "NOT DETECTED"
+        cv2.putText(frame, f"Gaze Direction: {status}", 
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(frame, f"Looking at: ({self.smooth_x:.2f}, {self.smooth_y:.2f}) on screen", 
+                   (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+        cv2.putText(frame, f"Pixel coords: ({gaze_x}, {gaze_y})", 
+                   (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+        
+        # Instructions
+        cv2.putText(frame, "Green cross = screen center | Red circle = your gaze direction", 
+                   (10, h - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         cv2.putText(frame, "Space: hide/show | Q: quit", 
                    (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
