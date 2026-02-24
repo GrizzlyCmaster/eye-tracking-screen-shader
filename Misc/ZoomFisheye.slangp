@@ -1,0 +1,12 @@
+shaders = "1"
+shader0 = "ZoomFisheye.slang"
+filter_linear0 = "true"
+scale_type0 = "source"
+scale0 = "1.0"
+
+parameters = "ZoomStrength;ZoomRadius;ZoomFalloff;CenterX;CenterY"
+ZoomStrength = "0.3"
+ZoomRadius = "0.35"
+ZoomFalloff = "2.0"
+CenterX = "0.5"
+CenterY = "0.5"

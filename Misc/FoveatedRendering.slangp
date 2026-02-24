@@ -1,0 +1,13 @@
+shaders = "1"
+shader0 = "foveated-rendering.slang"
+filter_linear0 = "true"
+scale_type0 = "source"
+scale0 = "1.0"
+
+parameters = "FoveaRadius;TransitionRadius;PeripheralBlur;CenterX;CenterY;Sharpness"
+FoveaRadius = "0.15"
+TransitionRadius = "0.35"
+PeripheralBlur = "2.0"
+CenterX = "0.5"
+CenterY = "0.5"
+Sharpness = "1.2"
